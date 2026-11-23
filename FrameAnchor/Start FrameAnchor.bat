@@ -1,6 +1,10 @@
 @echo off
 title FrameAnchor
 set "HERE=%~dp0"
+rem Ignore Python settings left behind by other software - they break the bundled Python.
+set "PYTHONHOME="
+set "PYTHONPATH="
+set "PYTHONNOUSERSITE=1"
 if not exist "%HERE%bin\uv.exe" goto notextracted
 if not exist "%HERE%app\frame_anchor_gui.py" goto notextracted
 echo.

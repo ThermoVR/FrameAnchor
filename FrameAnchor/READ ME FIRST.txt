@@ -15,7 +15,7 @@ HOW TO USE
    - If Windows shows a blue "Windows protected your PC" box, click
      "More info" and then "Run anyway".
    - The first start needs internet and takes about a minute. Later starts
-     are instant.
+     are instant and work offline.
    - A black window and the FrameAnchor window both open. Leave both open.
 
 3. Start SteamVR, put on the headset, turn on your trackers, and let Space
@@ -32,13 +32,23 @@ Next time, just start FrameAnchor before or after SteamVR. It remembers the
 lock, so you don't have to click anything.
 
 
-WHEN TO CLICK THE BIG BUTTON AGAIN
-----------------------------------
-- After you recenter or change your floor on purpose (otherwise FrameAnchor
-  will undo it)
-- After moving a base station
-- After redoing the Steam Frame's room setup
-Always get things looking right FIRST, then click it.
+RECENTERING OR CHANGING YOUR FLOOR ON PURPOSE
+---------------------------------------------
+FrameAnchor puts things back within a couple of seconds - including changes you
+make on purpose. So do it in this order:
+
+   1. Click "Pause"
+   2. Recenter / fix your floor / move a base station / redo room setup
+   3. When everything looks right, click the big button. That saves the new
+      lock and switches FrameAnchor back on by itself.
+
+
+IF IT ASKS "PLAYSPACE MOVED SINCE YOUR LOCK"
+--------------------------------------------
+When you start a new session and the playspace is far away from the lock you
+saved last time, FrameAnchor asks first instead of moving it:
+- You changed the floor / room setup on purpose: click the big button.
+- You didn't: click the orange "Put it back to my saved lock" button.
 
 
 WHAT THE COLOURS MEAN
@@ -54,14 +64,22 @@ IF SOMETHING SEEMS OFF
 ----------------------
 - After you click the big button, the log shows how high it thinks each base
   station is. If that's nowhere near how high your real base stations are
-  above the floor, your floor is wrong: fix the floor, then lock again.
-- It made things worse: click "Pause". Then tick "Test mode" and click Resume.
-  In test mode it only writes down what it would do, without changing anything.
+  above the floor, your floor is wrong: click Pause, fix the floor, then lock
+  again.
+- It made things worse: click "Undo fixes". That puts the playspace back to
+  exactly how it was when you clicked the big button, and pauses FrameAnchor.
+  To only watch without changing anything, tick "Test mode" and click Resume.
 - It says "Taking a break": another program keeps moving the playspace. Turn
   off space drag / playspace mover in OVR Advanced Settings.
-- "Base stations don't match the lock" for more than a minute: get everything
-  looking right and lock again.
+- "Base stations don't match the lock" for more than a minute: a base station
+  was moved, or SteamVR adjusted where it thinks one is. FrameAnchor changes
+  nothing while this shows. Get everything looking right and lock again.
 - To start over: click "Remove lock".
+- Windows says it blocked python.exe ("Smart App Control"): FrameAnchor can't
+  run on this PC as it is. Don't change security settings - send a screenshot
+  to whoever gave you FrameAnchor.
+- It says "FrameAnchor is already running": it's already open. Look for its
+  window in the taskbar. Only one copy can run at a time.
 
 Don't use these at the same time as FrameAnchor:
 - OVR Advanced Settings space drag / playspace mover
@@ -70,5 +88,26 @@ Don't use these at the same time as FrameAnchor:
 A log is saved at:  %APPDATA%\FrameAnchor\frame_anchor_log.txt
 Send that file if you need help.
 
-To uninstall, delete this folder. Nothing is installed into SteamVR.
+
+WHAT IT CHANGES, AND HOW TO REMOVE IT
+-------------------------------------
+FrameAnchor fixes jumps by changing SteamVR's saved playspace position (the
+same setting room setup changes). Those changes stay after you close
+FrameAnchor - that's what keeps your floor right.
+
+- Undo inside the app: "Undo fixes" (see above).
+- Before its very first change, FrameAnchor saves a copy of SteamVR's
+  playspace file here:
+     %APPDATA%\FrameAnchor\backup\chaperone_info (before FrameAnchor).vrchap
+  Last resort, to go back to exactly how things were before FrameAnchor:
+     1. Close SteamVR completely.
+     2. Copy that file into your Steam "config" folder (usually
+        C:\Program Files (x86)\Steam\config), rename it to
+        chaperone_info.vrchap, and replace the existing file.
+  (Or simply redo room setup.)
+
+To uninstall: delete this folder, and the %APPDATA%\FrameAnchor folder
+(paste %APPDATA% into the File Explorer address bar to find it). Nothing is
+installed into SteamVR itself.
+
 Unofficial tool, not affiliated with Valve.
