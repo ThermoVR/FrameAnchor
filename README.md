@@ -4,6 +4,8 @@ Keeps a **Steam Frame + Lighthouse (Vive tracker)** playspace locked to the real
 
 > **Experimental.** It works on at least one real Steam Frame setup, but it's young. It changes SteamVR's saved standing position. It backs that up first and has an Undo button.
 
+> **About this project.** Most of the code was written with AI assistance. I don't plan to keep it updated. Suggestions and bug reports are welcome in [Issues](../../issues), but I can't promise to act on them.
+
 ## Download
 
 Get **FrameAnchor.zip** from the [Releases](../../releases) page, extract it, and double-click **Start FrameAnchor**. The included `READ ME FIRST.txt` has the full user guide. The first start needs internet, about a minute, to set up Python. After that it works offline.
