@@ -84,7 +84,7 @@ def test_window_code_paths():
     wk = types.SimpleNamespace(cmds=queue.Queue(), stop_flag=mock.MagicMock())
     q = queue.Queue()
     app = g.App(tk, wk, q)
-    for st in ["waiting", "no-anchor", "paused", "ok", "corrected", "settling", "settling (still moving)",
+    for st in ["waiting", "no-anchor", "paused", "ok", "corrected", "settling", "settling (still moving)", "being-moved",
                "hmd-not-tracking", "no-anchor-devices-visible", "shape-mismatch rms=12.0cm",
                "shape-mismatch worst=6.2cm", "shift-too-large 4.00m", "backing-off", "cooldown",
                "confirm-needed dx=+50.0cm", "ok", "write-refused", "crashed", "weird"]:

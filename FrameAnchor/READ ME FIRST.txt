@@ -43,6 +43,32 @@ make on purpose. So do it in this order:
       lock and switches FrameAnchor back on by itself.
 
 
+OVR ADVANCED SETTINGS PLAYSPACE MOVER
+-------------------------------------
+You can use OVR Advanced Settings' playspace mover (dragging the playspace with
+a controller button) and its turning. FrameAnchor keeps your move instead of
+undoing it: the top of the window turns blue ("Playspace being moved") while
+you drag, and once you let go it keeps the new position and goes back to
+watching for jumps.
+
+Good to know:
+- After FrameAnchor has fixed a jump, OVR Advanced Settings sometimes "forgets"
+  that fix when you start your next drag, so the floor can jump back while you
+  drag. FrameAnchor puts it right about 2 seconds after you let go.
+- A reset bind / "Reset" button that puts the playspace back to its 0,0 spot
+  is kept too, as long as FrameAnchor was already running when the playspace
+  was last at that spot (normally true if you start FrameAnchor at the start of
+  your session). If a reset ever gets undone anyway: click Pause, press reset,
+  then click the big button - after that, resets work.
+- Other moves that happen in one instant are treated as jumps and undone,
+  except snap turns.
+- SteamVR's own "Reset view / recenter" still counts as a jump: click Pause
+  first, recenter, then click the big button (see above).
+- If jumps stop being fixed after this update, untick "Keep my OVR Advanced
+  Settings playspace moves" in the FrameAnchor window and send the log to
+  whoever gave you FrameAnchor.
+
+
 IF IT ASKS "PLAYSPACE MOVED SINCE YOUR LOCK"
 --------------------------------------------
 When you start a new session and the playspace is far away from the lock you
@@ -69,8 +95,8 @@ IF SOMETHING SEEMS OFF
 - It made things worse: click "Undo fixes". That puts the playspace back to
   exactly how it was when you clicked the big button, and pauses FrameAnchor.
   To only watch without changing anything, tick "Test mode" and click Resume.
-- It says "Taking a break": another program keeps moving the playspace. Turn
-  off space drag / playspace mover in OVR Advanced Settings.
+- It says "Taking a break": another program keeps moving the playspace in
+  sudden steps (another playspace tool?). Close it.
 - "Base stations don't match the lock" for more than a minute: a base station
   was moved, or SteamVR adjusted where it thinks one is. FrameAnchor changes
   nothing while this shows. Get everything looking right and lock again.
@@ -82,7 +108,6 @@ IF SOMETHING SEEMS OFF
   window in the taskbar. Only one copy can run at a time.
 
 Don't use these at the same time as FrameAnchor:
-- OVR Advanced Settings space drag / playspace mover
 - QuestLHSync or OpenVR-SpaceSync
 
 A log is saved at:  %APPDATA%\FrameAnchor\frame_anchor_log.txt

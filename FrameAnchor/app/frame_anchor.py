@@ -22,6 +22,15 @@ and therefore the floor and the room - are where they were.
 It only corrects yaw (turning) and position (including height). Both tracking
 systems use gravity for "up", so tilt is never touched.
 
+Moves you make on purpose with OVR Advanced Settings' playspace mover are kept:
+FrameAnchor works out SteamVR's live standing origin (read-only, from the base
+stations in raw vs standing space). If it changes gradually over several ticks
+(a drag) or by a clean turn around your head (a snap turn), the lock follows
+it. If it changes in one sudden step, that's a jump and gets fixed. OVR Advanced
+Settings re-applies its own remembered position when a drag starts, which can drop
+an earlier fix; that shows up as one big step at the start of the drag, so the
+drag is kept and the dropped fix is made again afterwards.
+
 If the base stations move relative to *each other* (someone bumped one, or
 SteamVR re-solved a base station's position), that is not a playspace jump, so
 FrameAnchor refuses to "fix" it and asks for a new lock instead.
@@ -140,6 +149,18 @@ def is_rigid(m, tol: float = 1e-3) -> bool:
     return (np.allclose(a[3], [0, 0, 0, 1], atol=tol)
             and np.allclose(r @ r.T, np.eye(3), atol=tol)
             and abs(float(np.linalg.det(r)) - 1.0) < tol)
+
+
+def rotation_deg(r: np.ndarray) -> float:
+    """Total rotation angle (degrees) of a 3x3 rotation matrix."""
+    c = (float(np.trace(r[:3, :3])) - 1.0) / 2.0
+    return math.degrees(math.acos(max(-1.0, min(1.0, c))))
+
+
+def poses_close(a: np.ndarray, b: np.ndarray, m: float, deg: float) -> bool:
+    """True if two 4x4 poses differ by less than m metres and deg degrees."""
+    return (float(np.linalg.norm(a[:3, 3] - b[:3, 3])) < m
+            and rotation_deg(a[:3, :3] @ b[:3, :3].T) < deg)
 
 
 def state_name(state: str | None) -> str:
@@ -281,6 +302,7 @@ class OpenVRBackend:
         self.backup_dir = backup_dir
         self.log = log
         self._backed_up = False
+        self.use_live_zero = True     # switched off if the live reading ever proves unreliable
 
     def _is_lighthouse(self, idx: int) -> bool:
         """True for Lighthouse devices (or if SteamVR won't say what the device is)."""
@@ -309,11 +331,43 @@ class OpenVRBackend:
         hmd = poses[ovr.k_unTrackedDeviceIndex_Hmd]
         return bool(hmd.bPoseIsValid) and hmd.eTrackingResult == ovr.TrackingResult_Running_OK
 
-    def get_anchor_poses(self, serials: set[str] | None) -> dict[str, np.ndarray]:
-        """Standing-space poses of base stations (or of the given serials)."""
+    def hmd_position(self) -> np.ndarray | None:
+        """Headset position in standing space (used to recognise snap turns), or None."""
         ovr = self.openvr
         poses = self.vr.getDeviceToAbsoluteTrackingPose(
             ovr.TrackingUniverseStanding, 0, self._pose_array)
+        hmd = poses[ovr.k_unTrackedDeviceIndex_Hmd]
+        if not hmd.bPoseIsValid:
+            return None
+        m = mat34_to_np(hmd.mDeviceToAbsoluteTracking)
+        return m[:3, 3].copy() if is_rigid(m) else None
+
+    def get_live_zero_pose(self, serials: set[str] | None) -> np.ndarray | None:
+        """
+        SteamVR's standing origin *as currently in effect*, worked out read-only from where the
+        base stations are in raw vs standing tracking space (raw = Z @ standing).
+
+        Unlike reading the chaperone working copy, this includes a move that another app
+        (OVR Advanced Settings' playspace mover) is previewing but hasn't saved, and it never
+        throws away that app's unsaved move. None if it can't be worked out reliably.
+        """
+        std = self.get_anchor_poses(serials)
+        raw = self.get_anchor_poses(serials, self.openvr.TrackingUniverseRawAndUncalibrated)
+        zs = [raw[k] @ np.linalg.inv(std[k]) for k in sorted(set(std) & set(raw))]
+        zs = [z for z in zs if is_rigid(z, tol=1e-2)]
+        if not zs:
+            return None
+        if any(not poses_close(z, zs[0], 0.01, 0.5) for z in zs[1:]):
+            return None     # the stations disagree (read mid-change?) - don't trust this tick
+        z = average_poses([{"z": z} for z in zs]).get("z")
+        return z if z is not None and is_rigid(z) else None
+
+    def get_anchor_poses(self, serials: set[str] | None, universe=None) -> dict[str, np.ndarray]:
+        """Standing-space (or `universe`) poses of base stations (or of the given serials)."""
+        ovr = self.openvr
+        if universe is None:
+            universe = ovr.TrackingUniverseStanding
+        poses = self.vr.getDeviceToAbsoluteTrackingPose(universe, 0, self._pose_array)
         out = {}
         for i in range(ovr.k_unMaxTrackedDeviceCount):
             cls = self.vr.getTrackedDeviceClass(i)
@@ -334,6 +388,15 @@ class OpenVRBackend:
         return out
 
     def get_zero_pose(self) -> np.ndarray:
+        """The standing origin to build a fix on: the live one if possible (keeps another app's
+        unsaved playspace move), otherwise SteamVR's saved one."""
+        if self.use_live_zero:
+            z = self.get_live_zero_pose(None)
+            if z is not None:
+                return z
+        return self.get_saved_zero_pose()
+
+    def get_saved_zero_pose(self) -> np.ndarray:
         self.setup.revertWorkingCopy()
         ok, m = self.setup.getWorkingStandingZeroPoseToRawTrackingPose()
         if not ok:
@@ -401,6 +464,18 @@ class Settings:
     burst_window_s: float = 60.0     # ...within this time means something is fighting us
     burst_backoff_s: float = 60.0    # so stop trying for this long
     refused_backoff_s: float = 30.0  # SteamVR refused a change: wait this long before retrying
+    # Playspace moves by other apps (OVR Advanced Settings playspace mover / turning):
+    follow_moves: bool = True        # keep a move made gradually (a drag) instead of undoing it
+    move_detect_m: float = 0.002     # standing origin changed by more than this...
+    move_detect_deg: float = 0.1     # ...or this between two ticks = someone is moving it
+    move_still_s: float = 0.5        # the move is over once it's been still this long
+    clobber_min_m: float = 0.02      # a dropped fix smaller than this is ignored
+    clobber_tol: float = 0.5         # match tolerance for a dropped fix, as a fraction of a drag step
+    snap_min_deg: float = 10.0       # a one-step pure turn at least this big...
+    snap_axis_m: float = 0.75        # ...around the headset (or the playspace centre) = a snap turn
+    snap_max_dy_m: float = 0.01      # (and no height change)
+    expect_s: float = 2.0            # our own write must show up within this long
+    reapply_grace_s: float = 5.0     # fixes this soon after a followed move don't count as "fighting"
     dry_run: bool = False
 
 
@@ -501,6 +576,247 @@ class FrameAnchor:
         self.first_fix_done = False
         self.undo_pose: np.ndarray | None = None   # standing origin at the last lock
         self.awaiting_confirm = False              # a big first fix is waiting for a yes
+        # Watching SteamVR's live standing origin for moves made by other apps:
+        self.z_last: np.ndarray | None = None      # live standing origin at the last tick
+        self.moving = False                        # another app is moving the playspace right now
+        self.move_z0: np.ndarray | None = None     # standing origin just before that move began
+        self.moves: list[np.ndarray] = []          # standing origin after each step of the move
+        self.move_last_t = 0.0
+        self.z_expect: np.ndarray | None = None    # what our own last write should look like
+        self.z_expect_t = 0.0
+        self.live_confirmed = False                # one of our writes showed up exactly as expected
+        self.followed_t = -1e9                     # when we last kept another app's move
+        self.sudden_t = -1e9                       # when the standing origin last jumped in one step
+        self.anchor_moved = False                  # the lock followed a move; caller should save it
+        self.moves_followed = 0
+        self.fix_writes: list[np.ndarray] = []     # raw-space changes our writes made this session
+        self.writer_synced = 0                     # other apps already know fix_writes[:writer_synced]
+        self.fix_seqs: list[int] = []              # sequence number of each entry in fix_writes
+        self.fix_seq_next = 0
+        # Positions the playspace rested at (for recognising resets), each with fix_seq_next at
+        # that moment: fixes numbered below it were already part of that position.
+        self.rest_zs: list[tuple[np.ndarray, int]] = []
+
+    # -- moves made by other apps (OVR Advanced Settings playspace mover) ------
+    def _live_zero(self) -> np.ndarray | None:
+        f = getattr(self.b, "get_live_zero_pose", None)
+        if f is None or not getattr(self.b, "use_live_zero", True):
+            return None
+        return f(self.anchor_serials)
+
+    def _expect(self, z: np.ndarray, now: float, before: np.ndarray | None = None) -> None:
+        """We just wrote z (over `before`): when it shows up, it's ours, not a move by another app."""
+        self.z_expect = z.copy()
+        self.z_expect_t = now
+        if before is not None and is_rigid(before, tol=1e-2):
+            self.fix_writes.append(z @ np.linalg.inv(before))   # raw-space change we made
+            self.fix_seqs.append(self.fix_seq_next)
+            self.fix_seq_next += 1
+            if len(self.fix_writes) > 50:
+                del self.fix_writes[0], self.fix_seqs[0]
+                self.writer_synced = max(0, self.writer_synced - 1)
+
+    def track_moves(self, now: float) -> bool:
+        """Watch SteamVR's live standing origin. Returns True while another app is moving it."""
+        z = self._live_zero()
+        if z is None:
+            return self.moving
+        if self.z_expect is not None:
+            if poses_close(z, self.z_expect, 0.005, 0.3):
+                self.z_expect = None
+                self.z_last = z
+                self.live_confirmed = True
+                self._remember_rest(z)
+                return self.moving
+            if now - self.z_expect_t > self.s.expect_s:
+                self.z_expect = None
+                if not self.live_confirmed and hasattr(self.b, "use_live_zero"):
+                    self.b.use_live_zero = False
+                    self.moving, self.moves, self.z_last = False, [], None
+                    self.log("!! Couldn't confirm SteamVR's live playspace position after a fix, so "
+                             "FrameAnchor has stopped keeping other apps' playspace moves this session "
+                             "(it still fixes jumps). Please send the log to whoever gave you FrameAnchor.")
+                    return False
+        if self.z_last is None:
+            self.z_last = z
+            self._remember_rest(z)
+            return False
+        if poses_close(z, self.z_last, self.s.move_detect_m, self.s.move_detect_deg):
+            if self.moving and now - self.move_last_t >= self.s.move_still_s:
+                self._finish_move(now)
+            return self.moving
+        if not self.moving:
+            self.moving = True
+            self.move_z0 = self.z_last
+            self.moves = []
+        self.moves.append(z)
+        self.z_last = z
+        self.move_last_t = now
+        return True
+
+    def _step_size(self, z_prev: np.ndarray, z_new: np.ndarray) -> float:
+        """How far one step of a move shifted the room around you (mean, metres)."""
+        return self._transform_size(np.linalg.inv(z_new) @ z_prev)
+
+    def _transform_size(self, d: np.ndarray) -> float:
+        """Mean distance a standing-space transform moves the base stations (metres)."""
+        if self.anchor and self.anchor.poses:
+            pts = np.vstack([device_points(p) for p in self.anchor.poses.values()])
+        else:
+            pts = np.zeros((1, 3))
+        return float(np.mean(np.linalg.norm(apply_points(d, pts) - pts, axis=1)))
+
+    def _is_snap_turn(self, z0: np.ndarray, z1: np.ndarray) -> bool:
+        return self._snap_score(z0, z1) is not None
+
+    def _snap_score(self, z0: np.ndarray, z1: np.ndarray) -> float | None:
+        """
+        One-step pure turn around the headset (or the playspace centre) = a snap turn.
+        Returns None if it isn't one, else how far it is from a perfect one (smaller = cleaner).
+        """
+        d = np.linalg.inv(z1) @ z0
+        yaw = abs(math.degrees(yaw_of(d)))
+        tilt = rotation_deg(d[:3, :3]) - yaw
+        if yaw < self.s.snap_min_deg or tilt > 0.5:
+            return None
+        if abs(d[1, 3]) > self.s.snap_max_dy_m:
+            return None
+        a = np.array([[1 - d[0, 0], -d[0, 2]], [-d[2, 0], 1 - d[2, 2]]])
+        try:
+            axis = np.linalg.solve(a, np.array([d[0, 3], d[2, 3]]))   # the point the turn is around
+        except np.linalg.LinAlgError:
+            return None
+        centres = [np.zeros(2)]
+        f = getattr(self.b, "hmd_position", None)
+        hmd = f() if f else None
+        if hmd is not None:
+            centres.append(np.array([hmd[0], hmd[2]]))
+        dist = min(float(np.linalg.norm(axis - c)) for c in centres)
+        if dist > self.s.snap_axis_m:
+            return None
+        return dist + abs(float(d[1, 3])) + 0.01 * max(tilt, 0.0)
+
+    def _dropped_fix(self, z0: np.ndarray, zs: list[np.ndarray]) -> np.ndarray | None:
+        """
+        If a move started by throwing away FrameAnchor's latest fix(es), return those fixes
+        (as a raw-space transform to put back on the left), else None.
+
+        Candidates are "nothing dropped" and "the last 1, 2, ... fixes FrameAnchor really wrote
+        this session were dropped". For each, the move's first step is worked out; the candidate
+        under which that first step looks most like a normal drag step (small, or like the next
+        step) wins. Ties go to "nothing dropped".
+        """
+        d2 = np.linalg.inv(zs[1]) @ zs[0] if len(zs) > 1 else None
+
+        def score(k):
+            d1 = np.linalg.inv(k @ zs[0]) @ z0
+            s = self._transform_size(d1)
+            if d2 is not None:
+                s = min(s, self._transform_size(d1 @ np.linalg.inv(d2)))
+            return s
+
+        cands = self._drop_candidates()
+        scores = {m: score(k) for m, k in cands}
+        scores[0] -= 0.005                           # ties go to "nothing dropped"
+        best = min(scores, key=scores.get)
+        # Most likely: it dropped exactly the fixes it hasn't seen yet. Prefer that unless
+        # another explanation is clearly better.
+        prior = len(self.fix_writes) - self.writer_synced
+        if prior in scores:
+            typical = float(np.median([self._step_size(a, b) for a, b in zip(zs[:-1], zs[1:])]))
+            if scores[prior] <= scores[best] + max(self.s.clobber_min_m, 0.25 * typical):
+                best = prior
+        return self._note_dropped(best, dict(cands)[best])
+
+    def _drop_candidates(self) -> list[tuple[int, np.ndarray]]:
+        """(m, transform that puts back FrameAnchor's last m fixes), m = 0 meaning none."""
+        out = [(0, np.eye(4))]
+        k = np.eye(4)
+        for i, m in enumerate(reversed(self.fix_writes), start=1):   # latest fix, latest two, ...
+            k = k @ m
+            if self._transform_size(np.linalg.inv(k)) >= self.s.clobber_min_m:
+                out.append((i, k.copy()))
+        return out
+
+    def _remember_rest(self, z: np.ndarray | None) -> None:
+        """A position the playspace rested at, for recognising resets."""
+        if z is None:
+            return
+        self.rest_zs = [r for r in self.rest_zs if not poses_close(z, r[0], 0.003, 0.15)]
+        self.rest_zs.append((z.copy(), self.fix_seq_next))
+        del self.rest_zs[:-30]
+
+    def _match_rest(self, z: np.ndarray) -> tuple[np.ndarray, int] | None:
+        for r in self.rest_zs:
+            if poses_close(z, r[0], 0.003, 0.15):
+                return r
+        return None
+
+    def _note_dropped(self, m: int, k: np.ndarray) -> np.ndarray | None:
+        """The other app's move dropped our last m fixes: they're gone (the fix that puts them
+        back is a new one), and it knows about all the others."""
+        if m:
+            del self.fix_writes[len(self.fix_writes) - m:], self.fix_seqs[len(self.fix_seqs) - m:]
+        self.writer_synced = len(self.fix_writes)
+        return k if m else None
+
+    def _finish_move(self, now: float) -> None:
+        zs, z0 = self.moves, self.move_z0
+        self.moving, self.moves = False, []
+        if self.anchor is None or z0 is None or not zs:
+            return
+        target, note = None, ""
+        if self.s.follow_moves:
+            rest = self._match_rest(zs[0]) if len(zs) == 1 else None
+            if rest is not None:
+                # Back exactly onto a position the playspace rested at before: a "reset playspace"
+                # (OVR Advanced Settings Reset / reset-offsets bind). A Frame jump never lands
+                # there to the millimetre. Keep it - and the fixes made since it rested there,
+                # which the reset dropped.
+                m = sum(1 for q in self.fix_seqs if q >= rest[1])
+                k = np.eye(4)
+                for f in self.fix_writes[len(self.fix_writes) - m:][::-1]:
+                    k = k @ f
+                k = self._note_dropped(m, k)
+                target = zs[0] if k is None else k @ zs[0]
+                note = " (back to an earlier position - a playspace reset)"
+            elif len(zs) == 1:
+                # A one-step change is a jump, unless it's a snap turn or a tiny nudge - possibly
+                # made from a remembered origin that drops some of FrameAnchor's fixes.
+                best = None              # (score, z1, kind, m, k) - the cleanest explanation wins
+                for m, k in self._drop_candidates():
+                    z1 = k @ zs[0]
+                    sc = self._snap_score(z0, z1)
+                    if sc is not None and (best is None or sc < best[0]):
+                        best = (sc, z1, " (a turn)", m, k)
+                    size = self._step_size(z0, z1)
+                    if size < self.s.threshold_m and (best is None or size < best[0]):
+                        best = (size, z1, "", m, k)     # a tiny nudge (e.g. a very slow drag)
+                if best is not None:
+                    target, note = best[1], best[2]
+                    if self._note_dropped(best[3], best[4]) is not None:
+                        note += " (it had dropped an earlier fix - put back)"
+            else:
+                target = zs[-1]
+                dropped = self._dropped_fix(z0, zs)
+                if dropped is not None:
+                    # OVR Advanced Settings started the drag from the position it remembered from
+                    # before FrameAnchor's fix(es), dropping them. Keep the drag and put the fix back.
+                    target = dropped @ zs[-1]
+                    note = f" (it had dropped an earlier fix of {self._step_size(zs[-1], target)*100:.0f} cm)"
+        if target is None or not is_rigid(target, tol=1e-2):
+            self.sudden_t = now
+            self.log("SteamVR's playspace position changed in one sudden step - treating it as a jump.")
+            return
+        self._remember_rest(zs[-1])         # where the other app left it (as it wrote it)
+        d = np.linalg.inv(target) @ z0      # old standing coordinates -> new ones
+        self.anchor.poses = {k: d @ v for k, v in self.anchor.poses.items()}
+        self.anchor_moved = True
+        self.followed_t = now
+        self.moves_followed += 1
+        self.window.clear()
+        if note or self._step_size(z0, target) >= 0.01:     # don't fill the log with tiny nudges
+            self.log(f"Kept your playspace move{note}: {describe(d)}")
 
     # -- anchoring -----------------------------------------------------------
     def capture_anchor(self, sleep=time.sleep, now=time.monotonic) -> bool:
@@ -534,6 +850,12 @@ class FrameAnchor:
         self.backoff_until = 0.0
         self.refused_until = 0.0
         self.first_fix_done = True  # the user just confirmed things are right
+        self.moving, self.moves = False, []
+        try:
+            self.z_last = self._live_zero()
+        except Exception:
+            self.z_last = None
+        self._remember_rest(self.z_last)
         heights = ", ".join(f"{k}: {v[1, 3]:.2f}m high" for k, v in poses.items())
         self.log(f"Anchored to {len(poses)} device(s): {heights}")
         if len(poses) == 1 and not self.anchor_serials:
@@ -555,7 +877,9 @@ class FrameAnchor:
         if self.undo_pose is None or not is_rigid(self.undo_pose):
             self.log("!! Nothing to undo to - there's no saved starting point from a lock yet.")
             return False
+        before = self.z_last
         self.b.set_zero_pose(self.undo_pose)
+        self._expect(self.undo_pose, time.monotonic(), before=before)
         self.paused = True
         self.window.clear()
         self.log("Undone: the playspace is back to how it was when you clicked Lock. "
@@ -588,10 +912,16 @@ class FrameAnchor:
         return state
 
     def _step(self, now: float) -> str:
+        moving = self.track_moves(now)
         if self.anchor is None:
             return "no-anchor"
         if self.paused:
             return "paused"
+        if moving and self.s.follow_moves:
+            # Another app (OVR Advanced Settings playspace mover) is moving the playspace:
+            # don't fight it. Once it stops, the lock follows the move.
+            self.window.clear()
+            return "being-moved"
         if now < self.refused_until:
             return "write-refused"
         if now < self.backoff_until:
@@ -640,8 +970,17 @@ class FrameAnchor:
             # Maybe the user redid room setup on purpose - ask instead of guessing.
             return "confirm-needed " + describe(t)
 
+        reapply = now - self.followed_t < self.s.reapply_grace_s
+        if reapply:
+            cause = "putting back a fix that a playspace move dropped"
+        elif now - self.sudden_t < 30.0:
+            cause = "cause: SteamVR's standing origin jumped"
+        elif getattr(self.b, "use_live_zero", False) and self.z_last is not None:
+            cause = "cause: base stations moved in raw tracking space"
+        else:
+            cause = ""
         try:
-            self.apply(t)
+            self.apply(t, now, cause)
         except ChaperoneWriteError as e:
             self.window.clear()
             self.refused_until = now + self.s.refused_backoff_s
@@ -650,6 +989,8 @@ class FrameAnchor:
         self.window.clear()
         self.first_fix_done = True
         self.cooldown_until = now + self.s.cooldown_s
+        if reapply:
+            return "corrected"   # one fix per playspace move is expected, not "something fighting us"
         self.fix_times.append(now)
         while self.fix_times and now - self.fix_times[0] > self.s.burst_window_s:
             self.fix_times.popleft()
@@ -660,11 +1001,12 @@ class FrameAnchor:
                      "(OVR Advanced Settings space drag? another playspace tool?). Taking a 60 s break.")
         return "corrected"
 
-    def apply(self, t: np.ndarray) -> None:
+    def apply(self, t: np.ndarray, now: float | None = None, cause: str = "") -> None:
+        why = f"  ({cause})" if cause else ""
         if self.s.dry_run:
             self.corrections += 1
             self.last_fix = describe(t)
-            self.log(f"[dry-run] would correct: {describe(t)}")
+            self.log(f"[dry-run] would correct: {describe(t)}{why}")
             return
         z = self.b.get_zero_pose()
         if not is_rigid(z):
@@ -673,9 +1015,10 @@ class FrameAnchor:
         if not is_rigid(new):
             raise ChaperoneWriteError("the computed fix was invalid, so it wasn't applied")
         self.b.set_zero_pose(new)
+        self._expect(new, time.monotonic() if now is None else now, before=z)
         self.corrections += 1
         self.last_fix = describe(t)
-        self.log(f"Corrected playspace: {describe(t)}")
+        self.log(f"Corrected playspace: {describe(t)}{why}")
 
 
 # ----------------------------------------------------------------------------
@@ -698,10 +1041,12 @@ def main(argv=None):
                     help="anchor to this device serial instead of base stations (repeatable). "
                          "Only use devices that never move, e.g. a spare tracker on a shelf.")
     ap.add_argument("--fresh", action="store_true", help="ignore the saved anchor and make a new one at start")
+    ap.add_argument("--no-follow", action="store_true",
+                    help="undo playspace moves made by other apps (OVR Advanced Settings) instead of keeping them")
     args = ap.parse_args(argv)
 
     settings = Settings(threshold_m=args.threshold_cm / 100, threshold_deg=args.threshold_deg,
-                        dry_run=args.dry_run)
+                        dry_run=args.dry_run, follow_moves=not args.no_follow)
 
     def log(msg):
         print(time.strftime("[%H:%M:%S] ") + msg, flush=True)
@@ -783,9 +1128,15 @@ def main(argv=None):
                 pass
 
             state = fa.step(time.monotonic())
+            if fa.anchor_moved and fa.anchor is not None:
+                fa.anchor_moved = False
+                try:
+                    fa.anchor.save(args.anchor_file)
+                except OSError as e:
+                    log(f"(Couldn't save the moved lock: {e})")
             name = state_name(state)
             # Only print when the kind of state changes - the numbers in it change every tick.
-            if name != state_name(last_state) and name not in ("ok", "cooldown", "corrected"):
+            if name != state_name(last_state) and name not in ("ok", "cooldown", "corrected", "being-moved"):
                 log(f"Status: {state}")
                 if name == "confirm-needed":
                     log("The playspace is far from your saved lock. If you changed it on purpose, "

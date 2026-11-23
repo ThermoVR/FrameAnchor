@@ -25,7 +25,7 @@ class FakeWorld:
     """
 
     def __init__(self, stations, noise=0.0, seed=0):
-        self.stations = stations          # serial -> real-room pose
+        self.stations = dict(stations)    # serial -> real-room pose (own copy: tests move stations)
         self.D = np.eye(4)
         self.sc_D = np.eye(4)
         self.Z = np.eye(4)
@@ -51,6 +51,19 @@ class FakeWorld:
 
     def get_zero_pose(self):
         return self.Z.copy()
+
+    # live standing origin, as SteamVR currently applies it (incl. OVRAS's unsaved preview)
+    use_live_zero = True
+    live_lags = False                  # True: the live value never shows our writes (broken reading)
+    head = np.array([0.4, 1.7, 0.3])   # headset position in standing space
+
+    def get_live_zero_pose(self, serials):
+        if self.live_lags:
+            return self._live_frozen.copy()
+        return self.Z.copy()
+
+    def hmd_position(self):
+        return self.head.copy()
 
     def set_zero_pose(self, z):
         self.Z = z.copy()

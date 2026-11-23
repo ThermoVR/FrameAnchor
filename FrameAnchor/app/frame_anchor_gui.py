@@ -38,6 +38,10 @@ def friendly(state: str, dry_run: bool) -> tuple[str, str, str]:
         if dry_run:
             return ("Watching (test mode)", "Jumps are written to the log below but not fixed.", GREEN)
         return ("Locked", "Watching for jumps. You can go play now.", GREEN)
+    if state == "being-moved":
+        return ("Playspace being moved",
+                "You (or OVR Advanced Settings) are moving the playspace. FrameAnchor will keep the new "
+                "position once you let go.", BLUE)
     if state.startswith("settling"):
         return ("Jump detected", "Waiting a moment for tracking to settle, then fixing it.", YELLOW)
     if state == "hmd-not-tracking":
@@ -64,7 +68,7 @@ def friendly(state: str, dry_run: bool) -> tuple[str, str, str]:
                 "playspace is set up in SteamVR.", ORANGE)
     if state == "backing-off":
         return ("Taking a break",
-                "Something else keeps moving the playspace (OVR Advanced Settings space drag?). "
+                "Something else keeps moving the playspace in sudden steps (another playspace tool?). "
                 "Trying again in a minute.", ORANGE)
     return (state, "", GREY)
 
@@ -152,6 +156,10 @@ class Worker(threading.Thread):
         elif name == "dry":
             self.settings.dry_run = cmd[1]
             self.log("Test mode ON - nothing will be changed." if cmd[1] else "Test mode OFF - jumps will be fixed.")
+        elif name == "follow":
+            self.settings.follow_moves = cmd[1]
+            self.log("Playspace moves (OVR Advanced Settings) will be KEPT." if cmd[1] else
+                     "Playspace moves (OVR Advanced Settings) will be UNDONE like jumps.")
         elif name == "lock":
             if not self.core:
                 self.log("Not connected to SteamVR yet - start SteamVR first.")
@@ -255,6 +263,12 @@ class Worker(threading.Thread):
                 if self.core.anchor is None:
                     self.core.last_seen = self.backend.get_anchor_poses(None)
                 state = self.core.step(time.monotonic())
+                if self.core.anchor_moved and self.core.anchor is not None:
+                    self.core.anchor_moved = False
+                    try:
+                        self.core.anchor.save(self.anchor_file)
+                    except OSError:
+                        pass
             except Exception:
                 self.log("Lost connection to SteamVR, reconnecting...\n" + traceback.format_exc(limit=3))
                 self.disconnect()
@@ -274,7 +288,7 @@ HELP = ("How to use:  1) Start SteamVR, turn on trackers, let Space Calibrator l
         "2) When your floor and trackers look right, click the big button.   "
         "3) Leave this window open while you play.   "
         "Want to recenter or change your floor on purpose? Click Pause FIRST, make the change, then click "
-        "the big button (it locks and resumes).")
+        "the big button (it locks and resumes). OVR Advanced Settings playspace drags and turns are kept.")
 
 
 class App:
@@ -289,8 +303,8 @@ class App:
 
         root = self.root = tk.Tk()
         root.title("FrameAnchor")
-        root.geometry("580x620")
-        root.minsize(500, 520)
+        root.geometry("580x650")
+        root.minsize(500, 545)
         root.protocol("WM_DELETE_WINDOW", self.close)
 
         self.headline = tk.Label(root, text="Starting...", font=("Segoe UI", 18, "bold"),
@@ -325,6 +339,11 @@ class App:
         self.dry_chk = tk.Checkbutton(root, text="Test mode (only write down jumps, don't fix them)",
                                       variable=self.dry_var, command=self.on_dry, anchor="w")
         self.dry_chk.pack(fill="x", padx=8, pady=(4, 0))
+
+        self.follow_var = tk.IntVar(value=1)
+        self.follow_chk = tk.Checkbutton(root, text="Keep my OVR Advanced Settings playspace moves",
+                                         variable=self.follow_var, command=self.on_follow, anchor="w")
+        self.follow_chk.pack(fill="x", padx=8)
 
         self.info = tk.Label(root, text="", font=("Segoe UI", 9), anchor="w", justify="left",
                              padx=12, pady=6, fg="#374151")
@@ -373,6 +392,9 @@ class App:
 
     def on_dry(self):
         self.worker.cmds.put(("dry", bool(self.dry_var.get())))
+
+    def on_follow(self):
+        self.worker.cmds.put(("follow", bool(self.follow_var.get())))
 
     def close(self):
         self.worker.stop_flag.set()
