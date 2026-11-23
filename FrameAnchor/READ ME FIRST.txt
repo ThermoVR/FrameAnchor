@@ -1,0 +1,74 @@
+FrameAnchor
+===========
+Keeps your Steam Frame + Vive tracker playspace locked to your real room, so the
+floor and playspace stop jumping around mid-session.
+
+Experimental: it has been tested in simulation, not yet on a real Steam Frame.
+
+
+HOW TO USE
+----------
+1. Extract the whole ZIP first (right-click it > Extract All). Don't run it from
+   inside the ZIP.
+
+2. Double-click "Start FrameAnchor".
+   - If Windows shows a blue "Windows protected your PC" box, click
+     "More info" and then "Run anyway".
+   - The first start needs internet and takes about a minute. Later starts
+     are instant.
+   - A black window and the FrameAnchor window both open. Leave both open.
+
+3. Start SteamVR, put on the headset, turn on your trackers, and let Space
+   Calibrator line everything up like you normally do. Make sure your floor is
+   right and your feet are where they should be.
+
+4. Click the big blue button: "My floor and trackers look right - LOCK IT".
+   The top of the window turns green and says "Locked".
+
+5. Play. Leave FrameAnchor open. When the playspace jumps, it puts it back
+   within a couple of seconds and writes a line in its log.
+
+Next time, just start FrameAnchor before or after SteamVR. It remembers the
+lock, so you don't have to click anything.
+
+
+WHEN TO CLICK THE BIG BUTTON AGAIN
+----------------------------------
+- After you recenter or change your floor on purpose (otherwise FrameAnchor
+  will undo it)
+- After moving a base station
+- After redoing the Steam Frame's room setup
+Always get things looking right FIRST, then click it.
+
+
+WHAT THE COLOURS MEAN
+---------------------
+Green   Locked and watching. All good.
+Yellow  A jump was detected, or the headset lost tracking. It sorts itself out.
+Orange  It needs you. Read the line under the coloured bar.
+Blue    Connected, but you haven't locked yet.
+Grey    Waiting for SteamVR, or paused.
+
+
+IF SOMETHING SEEMS OFF
+----------------------
+- After you click the big button, the log shows how high it thinks each base
+  station is. If that's nowhere near how high your real base stations are
+  above the floor, your floor is wrong: fix the floor, then lock again.
+- It made things worse: click "Pause". Then tick "Test mode" and click Resume.
+  In test mode it only writes down what it would do, without changing anything.
+- It says "Taking a break": another program keeps moving the playspace. Turn
+  off space drag / playspace mover in OVR Advanced Settings.
+- "Base stations don't match the lock" for more than a minute: get everything
+  looking right and lock again.
+- To start over: click "Remove lock".
+
+Don't use these at the same time as FrameAnchor:
+- OVR Advanced Settings space drag / playspace mover
+- QuestLHSync or OpenVR-SpaceSync
+
+A log is saved at:  %APPDATA%\FrameAnchor\frame_anchor_log.txt
+Send that file if you need help.
+
+To uninstall, delete this folder. Nothing is installed into SteamVR.
+Unofficial tool, not affiliated with Valve.
